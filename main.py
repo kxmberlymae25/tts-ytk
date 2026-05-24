@@ -1,4 +1,3 @@
-
 import pyttsx3
 from flask import Flask, request, jsonify, send_file, render_template_string
 import gtts
@@ -54,7 +53,7 @@ def gender_change(text, gender='male', filename='output.mp3'):
 def pitch_shift(input_path, output_path, n_steps):
     try:
         print(f"Loading audio file from: {input_path}")
-        # Load the audio file
+        # Load the audio file (Librosa handles WAV perfectly out-of-the-box)
         y, sr = librosa.load(input_path, sr=None)
         print(f"Audio loaded. Sample rate: {sr}, Length: {len(y)}")
 
@@ -62,7 +61,7 @@ def pitch_shift(input_path, output_path, n_steps):
         y_shifted = librosa.effects.pitch_shift(y=y, sr=sr, n_steps=n_steps)
         print(f"Pitch shifting applied with {n_steps} semitones.")
 
-        # Save the pitch-shifted audio to a file
+        # Save the pitch-shifted audio to a standard WAV file format
         sf.write(output_path, y_shifted, sr)
         print(f"Pitch-shifted audio saved to: {output_path}")
     except Exception as e:
@@ -93,7 +92,13 @@ def generate():
     # Generate filename based on the current timestamp
     currentDateAndTime = datetime.now()
     formattedDateTime = currentDateAndTime.strftime("%Y%m%d_%H%M%S")
-    filename = f'tts_{formattedDateTime}.mp3'
+    
+    # CRITICAL FIX: If shifting pitch, use .wav so librosa can process it without ffmpeg dependencies
+    if pitch != 0:
+        filename = f'tts_{formattedDateTime}_temp.wav'
+    else:
+        filename = f'tts_{formattedDateTime}.mp3'
+        
     filepath = os.path.join(UPLOAD_FOLDER, filename)
 
     # Generate and save the audio file
@@ -108,20 +113,20 @@ def generate():
     if gender != 0:
         try:
             gender_change(text, gender)
-
         except Exception as e:
             print(f"Error during gender change : {e}")
             return jsonify({'error': 'Error gender change '}), 500
 
-
     # Apply pitch shift if necessary
     if pitch != 0:
-        shifted_filename = f'tts_{formattedDateTime}_shifted.mp3'
+        # Save output final file as a standard WAV file so it plays cleanly in the browser
+        shifted_filename = f'tts_{formattedDateTime}.wav'
         shifted_filepath = os.path.join(UPLOAD_FOLDER, shifted_filename)
         try:
             pitch_shift(filepath, shifted_filepath, pitch)
-            # Remove the original file after shifting
-            os.remove(filepath)
+            # Remove the temporary un-shifted WAV file
+            if os.path.exists(filepath):
+                os.remove(filepath)
             filepath = shifted_filepath
             filename = shifted_filename
         except Exception as e:
@@ -150,9 +155,7 @@ def index():
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
         <title>Text-to-Speech API</title>
-        <!-- Bootstrap CSS -->
         <link href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css" rel="stylesheet">
-        <!-- Google Font -->
         <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
         <style>
             body {
@@ -279,7 +282,6 @@ def index():
                             <option value="hi">हिन्दी</option>
                             <option value="es">Español</option>
                             <option value="fr">Français</option>
-                            <!-- Add more languages as needed -->
                         </select>
                     </div>
                     <div class="form-group">
@@ -310,7 +312,6 @@ def index():
             </form>
         </div>
 
-        <!-- Bootstrap and jQuery JS -->
         <script src="https://code.jquery.com/jquery-3.5.1.slim.min.js"></script>
         <script src="https://cdn.jsdelivr.net/npm/@popperjs/core@2.9.3/dist/umd/popper.min.js"></script>
         <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/js/bootstrap.min.js"></script>
@@ -334,14 +335,11 @@ def index():
                 const message = document.getElementById('spinner-message');
                 const dots = '.'.repeat(dotCount);
                 message.textContent = `Generating, Please wait${dots}`;
-                dotCount = (dotCount % 3) + 1; // Cycle through 1, 2, 3 dots
+                dotCount = (dotCount % 3) + 1;
             }
 
             async function generateAudio() {
-                // Show the spinner and message
                 document.getElementById('spinner-container').style.display = 'block';
-
-                // Start updating the spinner message
                 intervalId = setInterval(updateSpinnerMessage, 500);
 
                 const text = document.getElementById('text-input').value;
@@ -356,26 +354,23 @@ def index():
                 });
                 const data = await response.json();
 
-                // Stop updating the spinner message
                 clearInterval(intervalId);
-
-                // Hide the spinner and message
                 document.getElementById('spinner-container').style.display = 'none';
 
                 if (data.audio_url) {
                     const audioPlayer = document.getElementById('audio-player');
+                    // Changed standard audio source layout to support both .mp3 and .wav natively in HTML5
                     audioPlayer.innerHTML = `
                         <div class="alert alert-success">
                             <h2>Generated Audio</h2>
                             <audio id="audio" controls autoplay>
-                                <source src="${data.audio_url}" type="audio/mpeg">
+                                <source src="${data.audio_url}">
                                 Your browser does not support the audio element.
                             </audio>
                             <br>
                             <a href="${data.audio_url}" class="btn btn-success mt-3" download>Download Audio</a>
                         </div>
                     `;
-                    // Auto-play the audio
                     document.getElementById('audio').play();
                 } else {
                     alert('Error generating audio: ' + (data.error || 'Unknown error'));
@@ -383,7 +378,6 @@ def index():
             }
 
             async function generateAndDownload() {
-                // Show the spinner and message
                 document.getElementById('spinner-container').style.display = 'block';
                 intervalId = setInterval(updateSpinnerMessage, 500);
 
@@ -416,6 +410,7 @@ def index():
     </body>
     </html>
     """)
+
 # Function to clean up old files
 def cleanup_files():
     while True:
@@ -427,7 +422,7 @@ def cleanup_files():
                 if current_time - file_mod_time > timedelta(minutes=15):
                     os.remove(file_path)
                     print(f"Deleted old file: {file_path}")
-        time.sleep(10)  # Run the cleanup every 60 seconds
+        time.sleep(10)
 
 # Start the cleanup thread
 cleanup_thread = threading.Thread(target=cleanup_files, daemon=True)
@@ -435,5 +430,3 @@ cleanup_thread.start()
 
 if __name__ == '__main__':
     app.run(debug=True)
-
-
